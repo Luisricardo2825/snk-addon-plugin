@@ -1,0 +1,5 @@
+<ignored>
+    <link rel="stylesheet" href="html5/{{SCREEN_NAME}}/{{SCREEN_NAME}}.css">
+    </link>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</ignored>
