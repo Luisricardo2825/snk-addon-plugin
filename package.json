@@ -1,16 +1,58 @@
 {
   "name": "snk-addon-plugin",
-  "module": "index.ts",
-  "types": "index.d.ts",
+  "version": "0.3.0",
+  "description": "Plugin Vite para preparar addons HTML compatíveis com Sankhya.",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "default": "./dist/react.js"
+    }
+  },
+  "keywords": [
+    "vite",
+    "sankhya",
+    "addon",
+    "frontend"
+  ],
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
-    "test": "bun test"
+    "build": "bun build ./index.ts ./react.ts --outdir ./dist --target node --format esm --sourcemap=linked --external react --external react-dom --external react-dom/client && tsc -p tsconfig.package.json && bun run scripts/copy-assets.ts",
+    "test": "bun test",
+    "prepack": "bun run build && bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "vite": "^8.2.1"
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0 || ^8.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
   },
   "peerDependencies": {
-    "typescript": "^5"
-  }
+    "vite": "^7.0.0 || ^8.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

@@ -49,6 +49,77 @@ Se o projeto usa um `tsconfig` separado para a aplicação e ele não inclui o
 { "compilerOptions": { "types": ["snk-addon-plugin"] } }
 ```
 
+## React
+
+O subpath `snk-addon-plugin/react` registra o módulo/controller AngularJS,
+monta o React no `#root` e desmonta a aplicação quando a tela é fechada. React
+e ReactDOM são dependências de pares do pacote.
+
+```tsx
+import { startSankhyaReactAddon } from "snk-addon-plugin/react";
+import App from "./App";
+import "./index.css";
+
+startSankhyaReactAddon(App);
+```
+
+Para usar React sem código AngularJS e sem acessar o documento/iframe, use
+`mountSankhyaAddon`. O plugin cria o módulo AngularJS mínimo exigido pelo
+Sankhya e esta função aguarda o `#root` ser inserido na tela.
+
+```tsx
+import { createRoot } from "react-dom/client";
+import { mountSankhyaAddon } from "snk-addon-plugin/react";
+import App from "./App";
+import "./index.css";
+
+mountSankhyaAddon((root) => {
+  const reactRoot = createRoot(root);
+  reactRoot.render(<App />);
+  return () => reactRoot.unmount();
+});
+```
+
+Para expor ações do `$scope` ao React, defina-as uma vez e consuma-as com o
+hook fornecido:
+
+```tsx
+import {
+  startSankhyaReactAddon,
+  useSankhyaActions,
+} from "snk-addon-plugin/react";
+
+type Actions = { salvar(): void };
+type Scope = { salvar(): void };
+
+startSankhyaReactAddon<Actions, Scope>(App, {
+  createActions: (scope) => ({
+    salvar: () => scope.salvar(),
+  }),
+});
+
+function SalvarButton() {
+  const { salvar } = useSankhyaActions<Actions>();
+  return <button onClick={salvar}>Salvar</button>;
+}
+```
+
+Use `removeBootstrap: true` apenas quando for necessário remover referências
+Bootstrap do documento do addon.
+
+## Publicação no NPM
+
+```bash
+bun install --frozen-lockfile
+bun run build
+bun test
+npm publish
+```
+
+Antes da primeira publicação, confirme que o nome `snk-addon-plugin` está
+disponível no NPM e substitua `"license": "UNLICENSED"` no `package.json` pela
+licença escolhida para o pacote.
+
 Quando `outDir` não é informado, o build é enviado automaticamente para
 `vc/src/main/webapp/html5/<tela>`. O valor de `rootProject.name` é preservado
 exatamente como definido no Gradle.

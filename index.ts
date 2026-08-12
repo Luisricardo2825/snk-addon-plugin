@@ -1,12 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Plugin, ResolvedConfig } from "vite";
-
-const PLUGIN_NAME = "snk-addon-plugin";
-const LAUNCHER_DIRECTORY_NAME = "launcher";
-const ROOT_PROJECT_NAME_PATTERN = /rootProject\.name\s*=\s*['"]([^'"]+)['"]/;
-const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
+import type { BuildEnvironmentOptions, Plugin, ResolvedConfig } from "vite";
 
 export interface AddonVitePluginOptions {
   /** Nome da tela Sankhya. Também determina os nomes dos artefatos gerados. */
@@ -24,16 +20,42 @@ export interface SankhyaScreenMetadata {
   rootProjectName: string;
 }
 
-interface SankhyaJavaProject {
+export interface SankhyaJavaProject {
   projectDirectory: string;
   frontendDirectory: string;
   rootProjectName: string;
 }
 
 /**
+ * Representação mínima exposta para evitar que tipos recursivos do Vite
+ * sejam comparados ao montar a configuração do consumidor.
+ */
+export interface AddonVitePlugin {
+  name: string;
+}
+
+declare global {
+  /** Nome da aplicação Sankhya gerada para a tela. */
+  var __APP_NAME__: string;
+  /** Nome do controller Sankhya gerado para a tela. */
+  var __CONTROLLER_NAME__: string;
+  /** Nome da tela Sankhya. */
+  var __SCREEN_NAME__: string;
+  /** Nome do projeto raiz Sankhya. */
+  var __ROOT_PROJECT_NAME__: string;
+}
+
+const PLUGIN_NAME = "snk-addon-plugin";
+const LAUNCHER_DIRECTORY_NAME = "launcher";
+const ROOT_PROJECT_NAME_PATTERN = /rootProject\.name\s*=\s*['"]([^'"]+)['"]/;
+const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
+
+/**
  * Prepara uma aplicação Vite para publicação como addon HTML do Sankhya.
  */
-export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
+export function addonVitePlugin(
+  options: AddonVitePluginOptions,
+): AddonVitePlugin {
   validateOptions(options);
 
   const { screenName, customBuildTag } = options;
@@ -43,18 +65,24 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
   let isBuild = false;
   let outputDirectory = options.outDir;
   let project: SankhyaJavaProject | undefined;
+  let publicAssetPaths: string[] = [];
 
   function getMetadata(): SankhyaScreenMetadata {
     if (!project) {
-      throw new Error(`${PLUGIN_NAME}: o projeto Java ainda não foi resolvido.`);
+      throw new Error(
+        `${PLUGIN_NAME}: o projeto Java ainda não foi resolvido.`,
+      );
     }
 
-    return {
+    const rootProjectName = project.rootProjectName.toLocaleLowerCase();
+    const values = {
       appName,
       controllerName,
       screenName,
-      rootProjectName: project.rootProjectName,
+      rootProjectName,
     };
+
+    return values;
   }
 
   function getOutputDirectory(): string {
@@ -78,6 +106,29 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
     );
   }
 
+  function rewritePublicAssetUrls(code: string): string {
+    if (!isBuild || !project) return code;
+
+    const basePath = `/${project.rootProjectName.toLocaleLowerCase()}/html5/${screenName}/`;
+    return publicAssetPaths.reduce((transformedCode, assetPath) => {
+      const escapedAssetPath = escapeRegExp(assetPath);
+      const assetUrl = `${basePath}${assetPath}`;
+      const expression = new RegExp(
+        `(["'])/${escapedAssetPath}(?=([?#][^"']*)?\\1)`,
+        "g",
+      );
+      return transformedCode.replace(
+        expression,
+        (_match, quote: string) => `${quote}${assetUrl}`,
+      );
+    }, code);
+  }
+
+  function createAngularCompatibilityBridge(): string {
+    const dependencies = isBuild ? ["snk"] : [];
+    return `;(()=>{const angular=window.angular;if(!angular)return;const appName=${JSON.stringify(appName)};const controllerName=${JSON.stringify(controllerName)};let module;try{module=angular.module(appName)}catch{module=angular.module(appName,${JSON.stringify(dependencies)})}module.controller(controllerName,[function(){}])})();\n`;
+  }
+
   function resolveInputHtmlName(): string {
     const input = resolvedConfig.build.rolldownOptions?.input;
 
@@ -86,7 +137,9 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
     if (Array.isArray(input)) return path.basename(input[0] ?? "index.html");
 
     const firstInput = Object.values(input)[0];
-    return typeof firstInput === "string" ? path.basename(firstInput) : "index.html";
+    return typeof firstInput === "string"
+      ? path.basename(firstInput)
+      : "index.html";
   }
 
   function processHtml(outputDirectory: string): void {
@@ -104,31 +157,52 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
     fs.writeFileSync(outputHtmlPath, transformHtml(html), "utf-8");
 
     if (inputHtmlPath !== outputHtmlPath) fs.unlinkSync(inputHtmlPath);
-    resolvedConfig.logger.info(`${PLUGIN_NAME}: HTML gerado em ${outputHtmlPath}.`);
+    resolvedConfig.logger.info(
+      `${PLUGIN_NAME}: HTML gerado em ${outputHtmlPath}.`,
+    );
   }
 
-  function processLauncher(outputDirectory: string): void {
-    const launcherDirectory = path.join(outputDirectory, LAUNCHER_DIRECTORY_NAME);
+  function processLauncher(
+    outputDirectory: string,
+    cssAssetPath: string | undefined,
+  ): void {
+    const launcherDirectory = path.join(
+      outputDirectory,
+      LAUNCHER_DIRECTORY_NAME,
+    );
 
     if (!isDirectory(launcherDirectory)) {
-      resolvedConfig.logger.warn(`${PLUGIN_NAME}: pasta launcher/ não encontrada no build.`);
+      resolvedConfig.logger.warn(
+        `${PLUGIN_NAME}: pasta launcher/ não encontrada no build.`,
+      );
       return;
     }
 
     const files = listFilesRecursively(launcherDirectory);
     const renames = files.map((source) => ({
       source,
-      destination: path.join(path.dirname(source), `${screenName}${path.extname(source)}`),
+      destination: path.join(
+        path.dirname(source),
+        `${screenName}${path.extname(source)}`,
+      ),
     }));
     validateLauncherRenames(renames);
 
     for (const file of files) {
       const content = fs.readFileSync(file, "utf-8");
-      fs.writeFileSync(file, content.replace(/{{SCREEN_NAME}}/g, screenName), "utf-8");
+      const screenContent = content.replace(/{{SCREEN_NAME}}/g, screenName);
+      const processedContent = replaceLauncherCssPath(
+        screenContent,
+        cssAssetPath,
+      );
+      fs.writeFileSync(file, processedContent, "utf-8");
     }
 
-    for (const { source, destination } of renames) fs.renameSync(source, destination);
-    resolvedConfig.logger.info(`${PLUGIN_NAME}: arquivos do launcher processados.`);
+    for (const { source, destination } of renames)
+      fs.renameSync(source, destination);
+    resolvedConfig.logger.info(
+      `${PLUGIN_NAME}: arquivos do launcher processados.`,
+    );
   }
 
   function copyLauncherToPublic(publicDirectory: string): void {
@@ -136,7 +210,9 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
     const destination = path.join(publicDirectory, LAUNCHER_DIRECTORY_NAME);
 
     if (!isDirectory(source)) {
-      throw new Error(`${PLUGIN_NAME}: pasta launcher/ não encontrada no pacote.`);
+      throw new Error(
+        `${PLUGIN_NAME}: pasta launcher/ não encontrada no pacote.`,
+      );
     }
 
     const copiedFiles = copyMissingFiles(source, destination);
@@ -145,12 +221,13 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
     );
   }
 
-  return {
+  const plugin: Plugin = {
     name: PLUGIN_NAME,
 
     config(config, environment) {
       isBuild = environment.command === "build";
-      project = findSankhyaJavaProject(path.resolve(config.root ?? process.cwd()));
+      const viteRoot = path.resolve(config.root ?? process.cwd());
+      project = findSankhyaJavaProject(viteRoot);
       outputDirectory ??= path.join(
         path.dirname(project.frontendDirectory),
         "webapp",
@@ -159,22 +236,28 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
       );
 
       const metadata = getMetadata();
-      const useLegacyRollupOptions = Boolean(config.build?.rollupOptions);
+      const useLegacyRollupOptions =
+        resolveConsumerViteMajorVersion(viteRoot) < 8 ||
+        Boolean(config.build?.rollupOptions);
       const configuredBundlerOptions = useLegacyRollupOptions
         ? config.build?.rollupOptions
         : config.build?.rolldownOptions;
-      const bundlerOptions = {
+      const bundlerOptions: BuildEnvironmentOptions["rolldownOptions"] = {
         ...configuredBundlerOptions,
         output: {
           ...configuredBundlerOptions?.output,
           entryFileNames: `${screenName}.js`,
           chunkFileNames: `${screenName}.js`,
-          assetFileNames: `${screenName}.[ext]`,
         },
       };
+      const dedupe = new Set(config.resolve?.dedupe ?? []);
+      dedupe.add("react");
+      dedupe.add("react-dom");
 
       return {
-        base: isBuild ? `/${metadata.rootProjectName}/html5/${screenName}/` : config.base,
+        base: isBuild
+          ? `/${metadata.rootProjectName}/html5/${screenName}/`
+          : config.base,
         define: {
           ...config.define,
           __APP_NAME__: JSON.stringify(metadata.appName),
@@ -182,10 +265,14 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
           __SCREEN_NAME__: JSON.stringify(metadata.screenName),
           __ROOT_PROJECT_NAME__: JSON.stringify(metadata.rootProjectName),
         },
+        resolve: {
+          ...config.resolve,
+          dedupe: [...dedupe],
+        },
         build: {
           outDir: outputDirectory,
           emptyOutDir: true,
-          minify: false,
+          minify: "esbuild",
           reportCompressedSize: true,
           ...(useLegacyRollupOptions
             ? { rollupOptions: bundlerOptions }
@@ -199,7 +286,28 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
       if (!config.publicDir) {
         throw new Error(`${PLUGIN_NAME}: publicDir não pode ser desabilitado.`);
       }
+      publicAssetPaths = listPublicAssetPaths(config.publicDir);
       copyLauncherToPublic(config.publicDir);
+    },
+
+    enforce: "pre",
+
+    transform(code, id) {
+      if (!/\.[cm]?[jt]sx?(?:\?.*)?$/i.test(id)) return null;
+
+      const transformedCode = rewritePublicAssetUrls(code);
+      return transformedCode === code
+        ? null
+        : { code: transformedCode, map: null };
+    },
+
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+
+      return {
+        code: `${createAngularCompatibilityBridge()}${code}`,
+        map: null,
+      };
     },
 
     transformIndexHtml(html) {
@@ -211,15 +319,25 @@ export function addonVitePlugin(options: AddonVitePluginOptions): Plugin {
 
       const outputDirectory = getOutputDirectory();
       if (!isDirectory(outputDirectory)) {
-        resolvedConfig.logger.warn(`${PLUGIN_NAME}: pasta de saída não encontrada.`);
+        resolvedConfig.logger.warn(
+          `${PLUGIN_NAME}: pasta de saída não encontrada.`,
+        );
         return;
       }
 
+      const cssAssetPath = findGeneratedCssAssetPath(
+        outputDirectory,
+        screenName,
+      );
       processHtml(outputDirectory);
-      processLauncher(outputDirectory);
+      processLauncher(outputDirectory, cssAssetPath);
     },
   };
+
+  return plugin;
 }
+
+export default addonVitePlugin;
 
 function validateOptions(options: AddonVitePluginOptions): void {
   if (!options.screenName?.trim()) {
@@ -231,6 +349,21 @@ function validateOptions(options: AddonVitePluginOptions): void {
   }
 }
 
+function resolveConsumerViteMajorVersion(viteRoot: string | undefined): number {
+  if (!viteRoot) return 8;
+
+  try {
+    const requireFromConsumer = createRequire(path.join(viteRoot, "package.json"));
+    const vitePackagePath = requireFromConsumer.resolve("vite/package.json");
+    const vitePackage = JSON.parse(fs.readFileSync(vitePackagePath, "utf-8")) as {
+      version?: string;
+    };
+    return Number.parseInt(vitePackage.version ?? "8", 10);
+  } catch {
+    return 8;
+  }
+}
+
 function findSankhyaJavaProject(viteRoot: string): SankhyaJavaProject {
   let projectDirectory = viteRoot;
 
@@ -238,7 +371,9 @@ function findSankhyaJavaProject(viteRoot: string): SankhyaJavaProject {
     const vcDirectory = path.join(projectDirectory, "vc");
     const sourceMainDirectory = path.join(vcDirectory, "src", "main");
 
-    if (isSankhyaJavaProject(projectDirectory, vcDirectory, sourceMainDirectory)) {
+    if (
+      isSankhyaJavaProject(projectDirectory, vcDirectory, sourceMainDirectory)
+    ) {
       if (!isPathInside(viteRoot, sourceMainDirectory)) {
         throw new Error(
           `${PLUGIN_NAME}: a raiz Vite deve estar em ${sourceMainDirectory}/<pasta-front-end> ou em um subdiretório. Raiz atual: ${viteRoot}.`,
@@ -257,7 +392,10 @@ function findSankhyaJavaProject(viteRoot: string): SankhyaJavaProject {
       const rootProjectName = readRootProjectName(settingsPath);
       return {
         projectDirectory,
-        frontendDirectory: path.join(sourceMainDirectory, frontendDirectoryName),
+        frontendDirectory: path.join(
+          sourceMainDirectory,
+          frontendDirectoryName,
+        ),
         rootProjectName,
       };
     }
@@ -287,10 +425,14 @@ function isSankhyaJavaProject(
 
 function readRootProjectName(settingsPath: string): string {
   const settings = fs.readFileSync(settingsPath, "utf-8");
-  const rootProjectName = settings.match(ROOT_PROJECT_NAME_PATTERN)?.[1]?.trim();
+  const rootProjectName = settings
+    .match(ROOT_PROJECT_NAME_PATTERN)?.[1]
+    ?.trim();
 
   if (!rootProjectName) {
-    throw new Error(`${PLUGIN_NAME}: rootProject.name não encontrado em ${settingsPath}.`);
+    throw new Error(
+      `${PLUGIN_NAME}: rootProject.name não encontrado em ${settingsPath}.`,
+    );
   }
 
   return rootProjectName;
@@ -318,7 +460,10 @@ function isDirectory(directory: string): boolean {
 
 function isPathInside(childPath: string, parentPath: string): boolean {
   const relativePath = path.relative(parentPath, childPath);
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  );
 }
 
 function listFilesRecursively(directory: string): string[] {
@@ -329,11 +474,30 @@ function listFilesRecursively(directory: string): string[] {
   });
 }
 
-function copyMissingFiles(sourceDirectory: string, destinationDirectory: string): number {
+function listPublicAssetPaths(publicDirectory: string): string[] {
+  if (!isDirectory(publicDirectory)) return [];
+
+  return listFilesRecursively(publicDirectory)
+    .map((file) =>
+      path.relative(publicDirectory, file).split(path.sep).join("/"),
+    )
+    .sort((left, right) => right.length - left.length);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function copyMissingFiles(
+  sourceDirectory: string,
+  destinationDirectory: string,
+): number {
   fs.mkdirSync(destinationDirectory, { recursive: true });
   let copiedFiles = 0;
 
-  for (const entry of fs.readdirSync(sourceDirectory, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(sourceDirectory, {
+    withFileTypes: true,
+  })) {
     const sourcePath = path.join(sourceDirectory, entry.name);
     const destinationPath = path.join(destinationDirectory, entry.name);
 
@@ -348,14 +512,87 @@ function copyMissingFiles(sourceDirectory: string, destinationDirectory: string)
   return copiedFiles;
 }
 
+function findGeneratedCssAssetPath(
+  outputDirectory: string,
+  screenName: string,
+): string | undefined {
+  const cssFiles = listFilesRecursively(outputDirectory).filter(
+    (file) => path.extname(file).toLowerCase() === ".css",
+  );
+  if (cssFiles.length === 0) return undefined;
+
+  const inputHtmlPath = path.join(outputDirectory, "index.html");
+  if (fs.existsSync(inputHtmlPath)) {
+    const html = fs.readFileSync(inputHtmlPath, "utf-8");
+    const cssHrefs = Array.from(
+      html.matchAll(/\bhref=(['"])([^'"]+\.css(?:[?#][^'"]*)?)\1/gi),
+      (match) => match[2]?.split(/[?#]/, 1)[0],
+    );
+    const linkedCssFile = cssFiles.find((file) => {
+      const relativePath = path
+        .relative(outputDirectory, file)
+        .split(path.sep)
+        .join("/");
+      return cssHrefs.some(
+        (href) => href?.endsWith(`/${relativePath}`) || href === relativePath,
+      );
+    });
+    if (linkedCssFile) {
+      return toSankhyaHtml5Path(outputDirectory, screenName, linkedCssFile);
+    }
+  }
+
+  if (cssFiles.length === 1) {
+    return toSankhyaHtml5Path(outputDirectory, screenName, cssFiles[0]!);
+  }
+  return undefined;
+}
+
+function toSankhyaHtml5Path(
+  outputDirectory: string,
+  screenName: string,
+  assetPath: string,
+): string {
+  return `html5/${screenName}/${path
+    .relative(outputDirectory, assetPath)
+    .split(path.sep)
+    .join("/")}`;
+}
+
+function replaceLauncherCssPath(
+  content: string,
+  cssAssetPath: string | undefined,
+): string {
+  if (!cssAssetPath) {
+    return content.replace(
+      /\s*<link\b[^>]*\bhref=["'][^"']*(?:\.css|{{CSS_PATH}})[^"']*["'][^>]*>\s*(?:<\/link>)?/i,
+      "",
+    );
+  }
+
+  if (content.includes("{{CSS_PATH}}")) {
+    return content.replace(/{{CSS_PATH}}/g, cssAssetPath);
+  }
+
+  return content.replace(
+    /(\bhref=["'])[^"']+\.css(?:[?#][^"']*)?(["'])/i,
+    `$1${cssAssetPath}$2`,
+  );
+}
+
 function validateLauncherRenames(
   renames: Array<{ source: string; destination: string }>,
 ): void {
   const destinations = new Set<string>();
 
   for (const { source, destination } of renames) {
-    if (destinations.has(destination) || (source !== destination && fs.existsSync(destination))) {
-      throw new Error(`${PLUGIN_NAME}: conflito ao renomear o arquivo do launcher para ${destination}.`);
+    if (
+      destinations.has(destination) ||
+      (source !== destination && fs.existsSync(destination))
+    ) {
+      throw new Error(
+        `${PLUGIN_NAME}: conflito ao renomear o arquivo do launcher para ${destination}.`,
+      );
     }
     destinations.add(destination);
   }
