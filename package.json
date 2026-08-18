@@ -1,6 +1,6 @@
 {
   "name": "snk-addon-plugin",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Plugin Vite para preparar addons HTML compatíveis com Sankhya.",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -8,6 +8,7 @@
   "type": "module",
   "files": [
     "dist",
+    "CHANGELOG.md",
     "README.md"
   ],
   "exports": {
@@ -20,6 +21,11 @@
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js",
       "default": "./dist/react.js"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.ts",
+      "import": "./dist/utils.js",
+      "default": "./dist/utils.js"
     }
   },
   "keywords": [
@@ -28,7 +34,7 @@
     "addon",
     "frontend"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
@@ -36,7 +42,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "bun build ./index.ts ./react.ts --outdir ./dist --target node --format esm --sourcemap=linked --external react --external react-dom --external react-dom/client && tsc -p tsconfig.package.json && bun run scripts/copy-assets.ts",
+    "build": "bun build ./src/index.ts ./src/react.ts ./src/utils.ts --outdir ./dist --target node --format esm --sourcemap=linked --external react --external react-dom --external react-dom/client && tsc -p tsconfig.package.json && bun run scripts/copy-assets.ts",
     "test": "bun test",
     "prepack": "bun run build && bun test"
   },
@@ -54,5 +60,13 @@
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "packageManager": "bun@1.3.14"
 }

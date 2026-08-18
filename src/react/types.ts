@@ -23,11 +23,6 @@ export interface SankhyaReactAddonOptions<
   removeBootstrap?: boolean;
 }
 
-export interface SankhyaMountOptions {
-  /** Id do elemento que receberá a aplicação. @default "root" */
-  rootId?: string;
-}
-
 export interface AngularModule {
   controller(
     name: string,

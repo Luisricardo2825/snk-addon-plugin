@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Plugin, UserConfig } from "vite";
-import addonVitePlugin from "../index";
+import addonVitePlugin from "../src/index";
 
 const temporaryDirectories: string[] = [];
 
@@ -43,6 +43,7 @@ describe("addonVitePlugin", () => {
     expect(config.resolve?.dedupe).toEqual(
       expect.arrayContaining(["react", "react-dom"]),
     );
+    expect(config.build?.minify).toBe("oxc");
     expect(config.build?.outDir).toBe(
       path.join(
         fixture.projectDirectory,
@@ -87,6 +88,125 @@ describe("addonVitePlugin", () => {
     expect(config.build?.rolldownOptions).toBeUndefined();
   });
 
+  test("generates a Sankhya development launcher configured for Vite HMR", () => {
+    const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
+    const outputDirectory = path.join(fixture.projectDirectory, "output");
+    fs.writeFileSync(
+      path.join(fixture.screenDirectory, "index.html"),
+      '<body><div id="root"></div><script type="module" src="/src/main.ts"></script></body>',
+      "utf-8",
+    );
+    const publicDirectory = path.join(fixture.screenDirectory, "public");
+    fs.mkdirSync(publicDirectory, { recursive: true });
+    fs.writeFileSync(path.join(publicDirectory, "icons.svg"), "", "utf-8");
+    const sourceAssetsDirectory = path.join(fixture.screenDirectory, "src", "assets");
+    fs.mkdirSync(sourceAssetsDirectory, { recursive: true });
+    fs.writeFileSync(path.join(sourceAssetsDirectory, "logo.svg"), "", "utf-8");
+    const nestedAssetsDirectory = path.join(
+      fixture.screenDirectory,
+      "src",
+      "features",
+      "card",
+      "media",
+    );
+    fs.mkdirSync(nestedAssetsDirectory, { recursive: true });
+    fs.writeFileSync(path.join(nestedAssetsDirectory, "banner.png"), "", "utf-8");
+    const plugin = addonVitePlugin({
+      screenName: "MinhaTela",
+      outDir: outputDirectory,
+      development: true,
+    });
+    const config = runConfig(plugin, fixture.screenDirectory, {}, serveEnvironment);
+
+    expect(config.server).toMatchObject({
+      host: "localhost",
+      strictPort: false,
+      cors: { origin: "http://localhost:8080" },
+    });
+    expect(config.server?.port).toBeUndefined();
+
+    runConfigResolved(
+      plugin,
+      outputDirectory,
+      publicDirectory,
+      fixture.screenDirectory,
+    );
+    getHookHandler(plugin.configureServer)?.call(
+      {} as never,
+      {
+        config: { root: fixture.screenDirectory, server: {} },
+        resolvedUrls: { local: ["http://localhost:5191/"] },
+        httpServer: { listening: true },
+      } as never,
+    );
+
+    expect(
+      fs.readFileSync(path.join(outputDirectory, "MinhaTela.html"), "utf-8"),
+    ).toBe('<div id="root"></div>');
+    expect(
+      fs.readFileSync(path.join(outputDirectory, "MinhaTela.js"), "utf-8"),
+    ).toContain('import("http://localhost:5191/@vite/client")');
+    expect(
+      fs.readFileSync(path.join(outputDirectory, "MinhaTela.js"), "utf-8"),
+    ).toContain('import("http://localhost:5191/src/main.ts")');
+    expect(
+      fs.readFileSync(path.join(outputDirectory, "MinhaTela.js"), "utf-8"),
+    ).not.toContain("document.head.prepend(base)");
+    expect(
+      fs.readFileSync(path.join(outputDirectory, "MinhaTela.js"), "utf-8"),
+    ).toContain('window.location.origin==="http://localhost:5191"?[]:["snk"]');
+    expect(
+      fs.existsSync(
+        path.join(outputDirectory, "assets", "logo.svg"),
+      ),
+    ).toBeTrue();
+    expect(
+      fs.existsSync(
+        path.join(outputDirectory, "features", "card", "media", "banner.png"),
+      ),
+    ).toBeTrue();
+    const transform = getHookHandler(plugin.transform);
+    expect(
+      transform?.call(
+        {} as never,
+        'const icon = "/icons.svg";',
+        "src/main.ts",
+        {} as never,
+      ),
+    ).toMatchObject({
+      code: 'const icon = "/projetoraiz/html5/MinhaTela/icons.svg";',
+    });
+    const resolveId = getHookHandler(plugin.resolveId);
+    const assetId = resolveId?.call(
+      {} as never,
+      "./assets/logo.svg",
+      path.join(fixture.screenDirectory, "src", "main.ts"),
+      {} as never,
+    ) as string;
+    const load = getHookHandler(plugin.load);
+    expect(load?.call({} as never, assetId, {} as never)).toBe(
+      'export default "/projetoraiz/html5/MinhaTela/assets/logo.svg";',
+    );
+    expect(
+      fs.existsSync(
+        path.join(outputDirectory, "assets", "logo.svg"),
+      ),
+    ).toBeTrue();
+    expect(
+      transform?.call(
+        {} as never,
+        '.logo { background: url("./assets/logo.svg") }',
+        path.join(fixture.screenDirectory, "src", "app.css"),
+        {} as never,
+      ),
+    ).toMatchObject({
+      code: '.logo { background: url("/projetoraiz/html5/MinhaTela/assets/logo.svg") }',
+    });
+    expect(
+      fs.existsSync(path.join(outputDirectory, "launcher", "MinhaTela.body")),
+    ).toBeTrue();
+  });
+
   test("rewrites absolute URLs that reference public assets during build", () => {
     const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
     const publicDirectory = path.join(fixture.screenDirectory, "public");
@@ -110,6 +230,27 @@ describe("addonVitePlugin", () => {
     });
   });
 
+  test("does not rewrite URLs in Vue virtual modules", () => {
+    const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
+    const publicDirectory = path.join(fixture.screenDirectory, "public");
+    fs.mkdirSync(publicDirectory, { recursive: true });
+    fs.writeFileSync(path.join(publicDirectory, "icons.svg"), "", "utf-8");
+
+    const plugin = addonVitePlugin({ screenName: "MinhaTela" });
+    runConfig(plugin, fixture.screenDirectory);
+    runConfigResolved(plugin, path.join(fixture.projectDirectory, "output"), publicDirectory);
+
+    const transform = getHookHandler(plugin.transform);
+    const result = transform?.call(
+      {} as never,
+      'const icon = "/icons.svg#documentation-icon";',
+      "src/HelloWorld.vue?vue&type=script&setup=true&lang.ts",
+      {} as never,
+    );
+
+    expect(result).toBeNull();
+  });
+
   test("registers an AngularJS compatibility module in the entry bundle", () => {
     const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
     const plugin = addonVitePlugin({ screenName: "MinhaTela" });
@@ -124,8 +265,10 @@ describe("addonVitePlugin", () => {
     );
 
     const renderedCode = (result as { code: string }).code;
-    expect(renderedCode).toContain('angular.module(appName,["snk"])');
+    expect(renderedCode).toContain('const dependencies=["snk"]');
+    expect(renderedCode).toContain("angular.module(appName,dependencies)");
     expect(renderedCode).toContain('module.controller(controllerName,[function(){}])');
+    expect(renderedCode).toContain("(()=>{\nconsole.log('app');\n})();");
   });
 
   test("copies and processes launcher files and HTML during build", () => {
@@ -262,11 +405,12 @@ function runConfig(
   plugin: Plugin,
   root: string,
   config: UserConfig = {},
+  environment = buildEnvironment,
 ): Partial<UserConfig> {
   return (getHookHandler(plugin.config)?.call(
     {} as never,
     { ...config, root },
-    buildEnvironment,
+    environment,
   ) ?? {}) as Partial<UserConfig>;
 }
 
@@ -274,6 +418,7 @@ function runConfigResolved(
   plugin: Plugin,
   outputDirectory: string,
   publicDirectory = outputDirectory,
+  root = outputDirectory,
 ): void {
   getHookHandler(plugin.configResolved)?.call(
     {} as never,
@@ -281,6 +426,8 @@ function runConfigResolved(
       build: { outDir: outputDirectory },
       logger: { info() {}, warn() {} },
       publicDir: publicDirectory,
+      root,
+      plugins: [],
     } as never,
   );
 }
@@ -296,4 +443,11 @@ const buildEnvironment = {
   isPreview: false,
   isSsrBuild: false,
   mode: "test",
+} as const;
+
+const serveEnvironment = {
+  command: "serve",
+  isPreview: false,
+  isSsrBuild: false,
+  mode: "development",
 } as const;

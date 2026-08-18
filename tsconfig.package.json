@@ -7,10 +7,10 @@
     "declarationMap": true,
     "emitDeclarationOnly": true,
     "outDir": "dist",
-    "rootDir": ".",
+    "rootDir": "src",
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["index.ts", "react.ts", "react/**/*.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules", "test"]
 }

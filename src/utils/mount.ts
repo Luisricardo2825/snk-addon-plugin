@@ -1,5 +1,9 @@
 import { getAddonDocument } from "./document";
-import type { SankhyaMountOptions } from "./types";
+
+export interface SankhyaMountOptions {
+  /** Id do elemento que receberá a aplicação. @default "root" */
+  rootId?: string;
+}
 
 export type SankhyaMount = (root: HTMLElement) => void | (() => void);
 
@@ -9,9 +13,12 @@ export type SankhyaMount = (root: HTMLElement) => void | (() => void);
  */
 export function mountSankhyaAddon(
   mount: SankhyaMount,
-  options: SankhyaMountOptions = {},
+  options?: SankhyaMountOptions | string,
 ): void {
-  const { rootId = "root" } = options;
+  let rootId = "root";
+  if (typeof options === "string") rootId = options;
+  else if (options?.rootId) rootId = options.rootId;
+
   const document = getAddonDocument();
   let root: HTMLElement | null = null;
   let cleanup: (() => void) | undefined;
@@ -21,11 +28,13 @@ export function mountSankhyaAddon(
     if (mounted) return;
 
     const container = document.getElementById(rootId);
-    if (!(container instanceof HTMLElement)) return;
+    // `instanceof HTMLElement` falha quando o root pertence a outro iframe,
+    // pois cada janela possui seu próprio construtor HTMLElement.
+    if (!container || container.nodeType !== 1) return;
 
     mounted = true;
-    root = container;
-    cleanup = mount(container) ?? undefined;
+    root = container as HTMLElement;
+    cleanup = mount(root) ?? undefined;
   };
 
   const observer = new MutationObserver(() => {
@@ -36,6 +45,9 @@ export function mountSankhyaAddon(
     cleanup?.();
   });
 
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
   tryMount();
 }
