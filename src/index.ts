@@ -74,10 +74,6 @@ const PLUGIN_NAME = "snk-addon-plugin";
 const LAUNCHER_DIRECTORY_NAME = "launcher";
 const ROOT_PROJECT_NAME_PATTERN = /rootProject\.name\s*=\s*['"]([^'"]+)['"]/;
 const DEVELOPMENT_ASSET_PREFIX = "\0snk-addon-plugin:asset:";
-const STATIC_ASSET_EXTENSIONS = new Set([
-  ".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp",
-  ".woff", ".woff2", ".eot", ".ttf", ".otf", ".mp3", ".mp4", ".webm",
-]);
 const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -193,20 +189,36 @@ export function addonVitePlugin(
     if (!isDirectory(sourceDirectory)) return;
 
     for (const assetPath of listFilesRecursively(sourceDirectory)) {
-      if (!STATIC_ASSET_EXTENSIONS.has(path.extname(assetPath).toLowerCase())) {
+      if (!isDevelopmentAsset(assetPath)) {
         continue;
       }
       copyDevelopmentSourceAsset(assetPath);
     }
   }
 
-  function resolveDevelopmentAsset(id: string, importer: string): string | undefined {
-    if (isBuild || !developmentServerUrl || id.includes("?raw") || id.includes("?inline")) {
+  function isDevelopmentAsset(id: string): boolean {
+    const [filePath, query = ""] = id.split("?", 2);
+    return (
+      resolvedConfig.assetsInclude(filePath!) ||
+      new URLSearchParams(query).has("url")
+    );
+  }
+
+  function resolveDevelopmentAsset(
+    id: string,
+    importer: string,
+  ): string | undefined {
+    if (
+      isBuild ||
+      !developmentServerUrl ||
+      id.includes("?raw") ||
+      id.includes("?inline")
+    ) {
       return undefined;
     }
 
     const cleanId = id.split(/[?#]/, 1)[0];
-    if (!cleanId || !STATIC_ASSET_EXTENSIONS.has(path.extname(cleanId).toLowerCase())) {
+    if (!cleanId || !isDevelopmentAsset(id)) {
       return undefined;
     }
 
@@ -236,9 +248,7 @@ export function addonVitePlugin(
     );
   }
 
-  function createAngularCompatibilityBridge(
-    viteServerUrl?: string,
-  ): string {
+  function createAngularCompatibilityBridge(viteServerUrl?: string): string {
     const dependencies = viteServerUrl
       ? `window.location.origin===${JSON.stringify(viteServerUrl)}?[]:["snk"]`
       : '["snk"]';
@@ -365,11 +375,7 @@ export function addonVitePlugin(
     const html = extractBody(replaceTokens(sourceHtml, getMetadata()))
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
       .trim();
-    fs.writeFileSync(
-      path.join(directory, `${screenName}.html`),
-      html,
-      "utf-8",
-    );
+    fs.writeFileSync(path.join(directory, `${screenName}.html`), html, "utf-8");
     fs.writeFileSync(
       path.join(directory, `${screenName}.js`),
       createDevelopmentEntry(entry, serverUrl),
@@ -521,6 +527,7 @@ export function addonVitePlugin(
       if (isBuild && id.includes("?vue")) return null;
       const isScript = /\.[cm]?[jt]sx?(?:\?.*)?$/i.test(id);
       const isStylesheet = /\.css(?:\?.*)?$/i.test(id);
+
       if (!isScript && !isStylesheet) return null;
 
       const transformedCode = isStylesheet
@@ -548,10 +555,13 @@ export function addonVitePlugin(
     handleHotUpdate(context) {
       if (isBuild || !developmentServerUrl) return;
 
-      const isPublicAsset = isPathInside(context.file, resolvedConfig.publicDir);
+      const isPublicAsset = isPathInside(
+        context.file,
+        resolvedConfig.publicDir,
+      );
       const isSourceAsset =
         isPathInside(context.file, viteRoot) &&
-        STATIC_ASSET_EXTENSIONS.has(path.extname(context.file).toLowerCase());
+        isDevelopmentAsset(context.file);
       if (!isPublicAsset && !isSourceAsset) return;
 
       if (isPublicAsset) copyDevelopmentPublicAssets();
@@ -574,7 +584,10 @@ export function addonVitePlugin(
     },
 
     transformIndexHtml(html) {
-      return transformHtml(html);
+      // Durante build, o Vite ainda precisa do documento completo para ligar o
+      // CSS de entrada ao HTML. A conversão para o body Sankhya ocorre em
+      // closeBundle, depois que esses links foram usados para identificar CSS.
+      return isBuild ? html : transformHtml(html);
     },
 
     closeBundle() {
@@ -851,6 +864,7 @@ function findGeneratedCssAssetPath(
   const inputHtmlPath = path.join(outputDirectory, "index.html");
   if (fs.existsSync(inputHtmlPath)) {
     const html = fs.readFileSync(inputHtmlPath, "utf-8");
+
     const cssHrefs = Array.from(
       html.matchAll(/\bhref=(['"])([^'"]+\.css(?:[?#][^'"]*)?)\1/gi),
       (match) => match[2]?.split(/[?#]/, 1)[0],
@@ -864,6 +878,7 @@ function findGeneratedCssAssetPath(
         (href) => href?.endsWith(`/${relativePath}`) || href === relativePath,
       );
     });
+
     if (linkedCssFile) {
       return toSankhyaHtml5Path(outputDirectory, screenName, linkedCssFile);
     }

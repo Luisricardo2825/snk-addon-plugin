@@ -207,6 +207,62 @@ describe("addonVitePlugin", () => {
     ).toBeTrue();
   });
 
+  test("uses Vite assetsInclude for development assets", () => {
+    const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
+    const outputDirectory = path.join(fixture.projectDirectory, "output");
+    fs.writeFileSync(
+      path.join(fixture.screenDirectory, "index.html"),
+      '<body><div id="root"></div><script type="module" src="/src/main.ts"></script></body>',
+      "utf-8",
+    );
+    const sourceDirectory = path.join(fixture.screenDirectory, "src");
+    fs.mkdirSync(sourceDirectory, { recursive: true });
+    fs.writeFileSync(path.join(sourceDirectory, "manual.pdf"), "pdf", "utf-8");
+    fs.writeFileSync(path.join(sourceDirectory, "schema.snkdata"), "data", "utf-8");
+    fs.writeFileSync(path.join(sourceDirectory, "document.custom"), "data", "utf-8");
+    fs.writeFileSync(path.join(sourceDirectory, "main.ts"), "code", "utf-8");
+
+    const plugin = addonVitePlugin({
+      screenName: "MinhaTela",
+      outDir: outputDirectory,
+      development: true,
+    });
+    runConfig(plugin, fixture.screenDirectory, {}, serveEnvironment);
+    runConfigResolved(
+      plugin,
+      outputDirectory,
+      path.join(fixture.screenDirectory, "public"),
+      fixture.screenDirectory,
+      (file) => /\.(pdf|snkdata)$/i.test(file),
+    );
+
+    getHookHandler(plugin.configureServer)?.call(
+      {} as never,
+      {
+        config: { root: fixture.screenDirectory, server: {} },
+        resolvedUrls: { local: ["http://localhost:5191/"] },
+        httpServer: { listening: true },
+      } as never,
+    );
+
+    expect(fs.existsSync(path.join(outputDirectory, "manual.pdf"))).toBeTrue();
+    expect(fs.existsSync(path.join(outputDirectory, "schema.snkdata"))).toBeTrue();
+    expect(fs.existsSync(path.join(outputDirectory, "document.custom"))).toBeFalse();
+    expect(fs.existsSync(path.join(outputDirectory, "main.ts"))).toBeFalse();
+
+    const resolvedAssetId = getHookHandler(plugin.resolveId)?.call(
+      {} as never,
+      "./document.custom?url",
+      path.join(sourceDirectory, "main.ts"),
+      {} as never,
+    ) as string;
+
+    expect(
+      getHookHandler(plugin.load)?.call({} as never, resolvedAssetId, {} as never),
+    ).toBe('export default "/projetoraiz/html5/MinhaTela/document.custom";');
+    expect(fs.existsSync(path.join(outputDirectory, "document.custom"))).toBeTrue();
+  });
+
   test("rewrites absolute URLs that reference public assets during build", () => {
     const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
     const publicDirectory = path.join(fixture.screenDirectory, "public");
@@ -292,6 +348,11 @@ describe("addonVitePlugin", () => {
       '.logo { background: url("./logo.svg") }',
       "utf-8",
     );
+    fs.writeFileSync(
+      path.join(outputDirectory, "assets", "notifications-def.css"),
+      ".notification { display: block }",
+      "utf-8",
+    );
     fs.writeFileSync(path.join(outputDirectory, "assets", "logo.svg"), "", "utf-8");
 
     getHookHandler(plugin.closeBundle)?.call({} as never);
@@ -337,7 +398,7 @@ describe("addonVitePlugin", () => {
     ).toBeTrue();
   });
 
-  test("uses customBuildTag when provided", () => {
+  test("preserves build HTML while Vite links generated CSS", () => {
     const fixture = createJavaProject("MinhaTela", "ProjetoRaiz");
     const outputDirectory = path.join(fixture.projectDirectory, "output");
     const plugin = addonVitePlugin({
@@ -357,9 +418,7 @@ describe("addonVitePlugin", () => {
       {} as never,
     );
 
-    expect(transformedHtml).toBe(
-      '<sankhya-screen app="MinhaTelaApp" project="projetoraiz"></sankhya-screen>',
-    );
+    expect(transformedHtml).toBe('<body><div id="root"></div></body>');
   });
 });
 
@@ -419,12 +478,14 @@ function runConfigResolved(
   outputDirectory: string,
   publicDirectory = outputDirectory,
   root = outputDirectory,
+  assetsInclude: (file: string) => boolean = (file) => /\.(svg|png)$/i.test(file),
 ): void {
   getHookHandler(plugin.configResolved)?.call(
     {} as never,
     {
       build: { outDir: outputDirectory },
       logger: { info() {}, warn() {} },
+      assetsInclude,
       publicDir: publicDirectory,
       root,
       plugins: [],
